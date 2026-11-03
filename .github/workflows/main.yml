@@ -1,0 +1,264 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Generate Android project
+        run: |
+          set -e
+          HTML=$(ls *.html | head -n1)
+          PKG=app/src/main/java/com/youssef/iptv
+          RES=app/src/main/res
+          mkdir -p android/$PKG android/app/src/main/assets
+          mkdir -p android/$RES/mipmap-anydpi android/$RES/mipmap-anydpi-v26 android/$RES/drawable android/$RES/values
+          cp "$HTML" android/app/src/main/assets/index.html
+          sed -i 's|function startStream(url){|function startStream(url){if(window.NativePlayer){try{NativePlayer.play(url);return;}catch(e){}}|' android/app/src/main/assets/index.html
+          grep -c "NativePlayer.play" android/app/src/main/assets/index.html
+          cd android
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+            repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+            repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'YoussefIPTV'
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'com.youssef.iptv'
+            compileSdk 34
+            defaultConfig {
+              applicationId 'com.youssef.iptv'
+              minSdk 24
+              targetSdk 34
+              versionCode 3
+              versionName '1.2'
+            }
+            compileOptions {
+              sourceCompatibility JavaVersion.VERSION_17
+              targetCompatibility JavaVersion.VERSION_17
+            }
+          }
+          dependencies {
+            implementation 'androidx.media3:media3-exoplayer:1.3.1'
+            implementation 'androidx.media3:media3-exoplayer-hls:1.3.1'
+            implementation 'androidx.media3:media3-ui:1.3.1'
+          }
+          EOF
+          cat > $RES/values/colors.xml <<'EOF'
+          <resources><color name="ic_bg">#9B59B6</color></resources>
+          EOF
+          cat > $RES/drawable/ic_fg.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp" android:height="108dp"
+            android:viewportWidth="108" android:viewportHeight="108">
+            <path android:fillColor="#FFFFFF" android:pathData="M40,34 L70,54 L40,74 Z"/>
+          </vector>
+          EOF
+          cat > $RES/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+            <background android:drawable="@color/ic_bg"/>
+            <foreground android:drawable="@drawable/ic_fg"/>
+          </adaptive-icon>
+          EOF
+          cat > $RES/mipmap-anydpi/ic_launcher.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp" android:height="108dp"
+            android:viewportWidth="108" android:viewportHeight="108">
+            <path android:fillColor="#9B59B6"
+              android:pathData="M30,0 h48 a30,30 0 0 1 30,30 v48 a30,30 0 0 1 -30,30 h-48 a30,30 0 0 1 -30,-30 v-48 a30,30 0 0 1 30,-30 z"/>
+            <path android:fillColor="#FFFFFF" android:pathData="M40,34 L70,54 L40,74 Z"/>
+          </vector>
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+            <application
+              android:label="Youssef TV"
+              android:icon="@mipmap/ic_launcher"
+              android:roundIcon="@mipmap/ic_launcher"
+              android:usesCleartextTraffic="true"
+              android:hardwareAccelerated="true"
+              android:supportsRtl="true"
+              android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+              <activity android:name=".MainActivity" android:exported="true"
+                android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+              <activity android:name=".PlayerActivity" android:exported="false"
+                android:screenOrientation="sensorLandscape"
+                android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"/>
+            </application>
+          </manifest>
+          EOF
+          cat > $PKG/MainActivity.java <<'EOF'
+          package com.youssef.iptv;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.RenderProcessGoneDetail;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+          public class MainActivity extends Activity {
+            static MainActivity inst;
+            WebView web; FrameLayout root; View custom; WebChromeClient.CustomViewCallback cb;
+            class Bridge {
+              @JavascriptInterface public void play(final String url) {
+                runOnUiThread(new Runnable() { public void run() {
+                  Intent i = new Intent(MainActivity.this, PlayerActivity.class);
+                  i.putExtra("url", url);
+                  startActivity(i);
+                }});
+              }
+            }
+            static void playerClosed() {
+              if (inst == null || inst.web == null) return;
+              inst.web.post(new Runnable() { public void run() {
+                inst.web.evaluateJavascript("try{leavePlayer()}catch(e){}", null);
+              }});
+            }
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              inst = this;
+              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              root = new FrameLayout(this);
+              web = new WebView(this);
+              root.addView(web);
+              setContentView(root);
+              WebSettings s = web.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setDatabaseEnabled(true);
+              s.setAllowFileAccess(true);
+              s.setAllowFileAccessFromFileURLs(true);
+              s.setAllowUniversalAccessFromFileURLs(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+              web.addJavascriptInterface(new Bridge(), "NativePlayer");
+              web.setWebViewClient(new WebViewClient() {
+                @Override public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
+                  runOnUiThread(new Runnable() { public void run() { recreate(); }});
+                  return true;
+                }
+              });
+              web.setWebChromeClient(new WebChromeClient() {
+                @Override public void onShowCustomView(View v, CustomViewCallback c) {
+                  if (custom != null) { c.onCustomViewHidden(); return; }
+                  custom = v; cb = c;
+                  root.addView(v, new FrameLayout.LayoutParams(-1, -1));
+                  web.setVisibility(View.GONE);
+                  getWindow().getDecorView().setSystemUiVisibility(5894);
+                }
+                @Override public void onHideCustomView() {
+                  if (custom == null) return;
+                  root.removeView(custom); custom = null;
+                  web.setVisibility(View.VISIBLE);
+                  getWindow().getDecorView().setSystemUiVisibility(0);
+                  if (cb != null) cb.onCustomViewHidden();
+                }
+              });
+              web.loadUrl("file:///android_asset/index.html");
+            }
+            @Override public void onBackPressed() {
+              if (custom != null) { web.getWebChromeClient().onHideCustomView(); }
+              else if (web.canGoBack()) { web.goBack(); }
+              else { super.onBackPressed(); }
+            }
+          }
+          EOF
+          cat > $PKG/PlayerActivity.java <<'EOF'
+          package com.youssef.iptv;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.WindowManager;
+          import android.widget.Toast;
+          import androidx.media3.common.MediaItem;
+          import androidx.media3.common.PlaybackException;
+          import androidx.media3.common.Player;
+          import androidx.media3.datasource.DefaultHttpDataSource;
+          import androidx.media3.exoplayer.ExoPlayer;
+          import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+          import androidx.media3.ui.PlayerView;
+          public class PlayerActivity extends Activity {
+            ExoPlayer player; String url; int retries = 0;
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              getWindow().getDecorView().setSystemUiVisibility(5894);
+              url = getIntent().getStringExtra("url");
+              PlayerView pv = new PlayerView(this);
+              setContentView(pv);
+              DefaultHttpDataSource.Factory hf = new DefaultHttpDataSource.Factory()
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(15000)
+                .setReadTimeoutMs(15000)
+                .setUserAgent("Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+              player = new ExoPlayer.Builder(this)
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(hf))
+                .build();
+              pv.setPlayer(player);
+              player.addListener(new Player.Listener() {
+                @Override public void onPlaybackStateChanged(int st) {
+                  if (st == Player.STATE_READY) retries = 0;
+                }
+                @Override public void onPlayerError(PlaybackException e) {
+                  if (retries < 5) {
+                    retries++;
+                    player.setMediaItem(MediaItem.fromUri(url));
+                    player.prepare();
+                    player.play();
+                  } else {
+                    Toast.makeText(PlayerActivity.this, "تعذر تشغيل القناة", Toast.LENGTH_LONG).show();
+                  }
+                }
+              });
+              player.setMediaItem(MediaItem.fromUri(url));
+              player.prepare();
+              player.play();
+            }
+            @Override protected void onDestroy() {
+              if (player != null) { player.release(); player = null; }
+              super.onDestroy();
+              MainActivity.playerClosed();
+            }
+          }
+          EOF
+      - name: Build
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YoussefIPTV-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
